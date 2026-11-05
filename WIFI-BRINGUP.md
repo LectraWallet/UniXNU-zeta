@@ -1,18 +1,22 @@
 # Wi-Fi bring-up for UniXNU-zeta (Surface Duo 2)
 
 > **STATUS: EXPERIMENTAL / UNTESTED — Wi-Fi does NOT work yet.**
-> This branch is a bring-up plan plus a driver skeleton. Nothing here has
-> run on hardware. Do not expect a network interface to appear. The work
-> below is the honest starting point, not a finished driver.
+> This branch is a bring-up plan. Nothing here has run on hardware.
+> Do not expect a network interface to appear.
 
-## Where the port stands (2026-11-05)
+## Correction: Wi-Fi already works on another UniXNU device
 
-From the repo's own README (main branch): the XNU kernel boots on the Duo 2,
-`launchd` reaches PID 1 (via the owner-root policy), AMFI loads, and the
-read-only root mounts. The graphical interface still needs bring-up, and
-there is **no Wi-Fi code anywhere in the tree** — no driver, no firmware
-loading, no branch. Wi-Fi sits behind the GUI: there is no SpringBoard to
-show a network picker until the display stack lands.
+UniXNU already has a working Wi-Fi stack — it just isn't on the Duo 2 yet.
+**Ath12kWifi** ([UniXNU/Ath12kWifi](https://github.com/UniXNU/Ath12kWifi))
+runs Linux ath12k + mac80211/cfg80211 on XNU, with MHI/QRTR/QMI for startup
+and wpa_supplicant 2.12 for authentication. On sheng (Xiaomi Pad 6S Pro,
+SM8550, WCN7850) it joins WPA2-Personal networks, gets an address by DHCP
+and loads web pages. The Duo 2 job is **adapting Ath12kWifi to zeta**, not
+writing a driver from scratch.
+
+Reference: the official adaptation guide at
+https://unixnu.com/porting/network and the component doc
+`docs/drivers/ath12k-wifi.md` in the UniXNU repo.
 
 ## Hardware
 
@@ -21,73 +25,54 @@ show a network picker until the display stack lands.
 - Wi-Fi: Qualcomm FastConnect 6900, silicon WCN6855 — Wi-Fi 6 (802.11ax),
   dual-band 2.4/5 GHz. Bluetooth 5.1 shares the same chip; that is a
   separate job and is not covered here.
-- The Wi-Fi block's interconnect must be confirmed from the stock device
-  tree (`zeta.dtb`, built by `scripts/make-zeta-dtb.py`): WCN685x on SM8350
-  is normally exposed over PCIe. Verify the node and its address before
-  writing the attach path — do not assume it.
 
-## Reference implementation: Linux ath11k
+## What adapting Ath12kWifi to zeta needs (in order)
 
-ath11k is the mainline Linux driver for Qualcomm 802.11ax parts (in the
-kernel since v5.6) and the only complete open implementation of this chip.
-Its layering is the map for the XNU driver:
-
-```
-mac80211 (Linux 802.11 stack)
-  ath11k core (WMI command/event handling, scan, assoc, keys, TX/RX)
-    WMI  — Wireless Module Interface (firmware command protocol)
-    HTC  — Host-Target Communication (message transport)
-    HIF  — Host Interconnect Framework
-    CE   — Copy Engine (DMA rings)
-    PCI  — bus attachment
-```
-
-The XNU equivalent replaces `mac80211` with Apple's `IO80211Family`
-(`IO80211Controller` / `IO80211Interface`) and the PCI/CE layers with the
-platform's bus attachment from the ADT. The WMI/HTC/CE logic is the part
-worth porting, not the Linux bus code.
-
-Sources: https://wireless.docs.kernel.org/en/latest/en/users/drivers/ath11k/installation.html
-and the ath11k tree in mainline Linux (`drivers/net/wireless/ath/ath11k/`).
+1. **Identify the radio.** WCN6855 PCI ID, firmware and board-data variant,
+   from the Duo 2's own firmware dump. Record them in
+   `proprietary-files.txt` (same pattern as the existing EDL-dump pins).
+   **Open question: WCN6855 is NOT in Ath12kWifi's hardware list**
+   (qcc2072, qcn9274 and wcn7850 only). It is an ath11k-generation chip,
+   while Ath12kWifi is built on ath12k — adding its device definition and
+   confirming firmware support is the first thing to settle.
+2. **Bring up the PCIe endpoint.** Record the controller/PHY windows, lane
+   count, reset sequence, WLAN enable, PERST, reference clock, regulators,
+   interconnect votes, SMMU streams and MSI routing. Then: power and clock
+   the endpoint, train the link, read the vendor/device ID, assign and map
+   the BAR, establish the DMA range and prove buffers are reachable,
+   attach MSI and confirm delivery. (Reference: WCN7850 on SM8550 PCIe0
+   trains at Gen2 x1, endpoint `17cb:1107`, MSIs to SPI 141.)
+3. **Implement the component callbacks** from `include/nw_abi.h`:
+   `lx_platform` (time, sleep, polling, logging, allocation, DMA
+   alloc/map/sync, `fw_get`) and `nw_board` (mapped BAR, PCI identity,
+   config-space access, MSI target). Then call `nw_wifi_start` and service
+   `nw_wifi_step` from the board worker. Checkpoints: firmware and QRTR
+   services start, then scanning reports BSS entries.
+4. **Connect the OS network interface.** Adapt `WifiNet.cpp` to the zeta
+   XNU and wireless-framework ABI (`nw_wifi_scan`, `nw_wifi_connect`,
+   `nw_wifi_tx`, receive/link events, MAC identity, channel/regulatory
+   data), select Ath12kWifi in the component list, rebuild the kernel,
+   payload and boot image. Checkpoints: scan, authentication, association,
+   address configuration, receive and transmit.
+5. **Hardware test on a real Duo 2.** Scan, join an open network, then
+   WPA2, then DHCP and sustained traffic. Nothing before this step proves
+   anything. Note the zeta port still has no GUI, so there is no Settings
+   UI to pick networks until the display stack lands.
 
 ## Firmware
 
-The chip runs on signed firmware blobs. On Linux these ship in
-`linux-firmware` under `ath11k/WCN6855/hw2.0/` (`board-2.bin` plus the
-`WLAN.HSP.*` firmware image). Do **not** commit firmware blobs to this
-repo. Extract them from the phone's own firmware dump, the same way
-`proprietary-files.txt` already pins EDL-dump partitions by SHA-256 — add
-the Wi-Fi firmware partitions to that file once their names are confirmed
-from the dump, and load them from `.cache/firmware` at build time.
+The chip runs on signed firmware blobs. On sheng they load from
+`/private/var/ngpu/firmware/ath12k/WCN7850/hw2.0/` after addon install.
+For zeta, extract the WCN6855 firmware + board data from the EDL dump and
+pin file sizes and SHA-256 hashes the same way. Do **not** commit firmware
+blobs to this repo.
 
-## What a working driver needs (in order)
+## Note on the skeleton in this branch
 
-1. **GUI/SpringBoard working first.** No network UI exists until the
-   display stack lands (see README Stage 6).
-2. **Device discovery.** Confirm the WCN6855 node in the ADT/DT and its
-   interrupt + memory resources. Add it to the platform description.
-3. **Firmware loading.** Extract the WCN6855 firmware + board data from
-   the EDL dump; implement the load sequence (reset, upload, start) in the
-   driver.
-4. **WMI/HTC/CE port.** Port the ath11k WMI command/event handling, HTC
-   message transport and Copy Engine ring management to XNU. This is the
-   bulk of the work.
-5. **IO80211Controller subclass.** Implement scan, join, auth/assoc, key
-   management and TX/RX against `IO80211Family`, and publish an
-   `IO80211Interface` so the network stack sees `en0`.
-6. **Hardware test.** Scan for networks on the real Duo 2, associate to an
-   open network, then WPA2, then check throughput and power management.
-   Nothing before step 6 proves anything.
-
-## What is in this branch
-
-- This document (`WIFI-BRINGUP.md`).
-- `drivers/wcn685x/` — a minimal `IO80211Controller` skeleton
-  (`IO80211WCN685x.h` / `.cpp`, `Info.plist`). It declares the class,
-  matching dictionary and the firmware-load hook, and every real method is
-  a marked TODO. It does not compile against the XNU tree yet and does not
-  run. It exists so the next person starts from the right shape instead of
-  a blank file.
+`drivers/wcn685x/` (IO80211WCN685x.h/.cpp, Info.plist) predates the
+Ath12kWifi finding and follows the wrong architecture: it assumes a native
+IO80211Controller driver, but the project runs the Linux wireless stack on
+XNU instead. Ignore it — the adaptation plan above is the real path.
 
 ## License
 
