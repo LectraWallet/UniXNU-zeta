@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Info.plist — SKELETON ONLY for the WCN6855 Wi-Fi driver. Untested.
+     The provider class / matching must be filled in once the WCN6855 node
+     is confirmed in the zeta device tree (see WIFI-BRINGUP.md). -->
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>com.unixnu.zeta.IO80211WCN685x</string>
+	<key>CFBundleName</key>
+	<string>IO80211WCN685x</string>
+	<key>CFBundleVersion</key>
+	<string>0.0.1</string>
+	<key>IOKitPersonalities</key>
+	<dict>
+		<key>IO80211WCN685x</key>
+		<dict>
+			<key>CFBundleIdentifier</key>
+			<string>com.unixnu.zeta.IO80211WCN685x</string>
+			<key>IOClass</key>
+			<string>IO80211WCN685x</string>
+			<!-- TODO: set IOProviderClass to the platform/PCI provider
+			     for the WCN6855 node and add the matching properties
+			     (vendor/device IDs) from the device tree. -->
+			<key>IOProviderClass</key>
+			<string>IOService</string>
+		</dict>
+	</dict>
+	<key>OSBundleLibraries</key>
+	<dict>
+		<key>com.apple.iokit.IO80211Family</key>
+		<string>1.0.0</string>
+		<key>com.apple.kpi.iokit</key>
+		<string>1.0.0</string>
+	</dict>
+</dict>
+</plist>
